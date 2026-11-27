@@ -13,32 +13,23 @@
 
   let isLinkClick = false;
   let lastTrustedLink = null;
+
   const BLUR_CONFIRM_MS = 1500;
   let pendingAdBlur = null;
-  let pendingAdBlurTimer = null;
   const cancelPendingAdBlur = () => {
-    if (pendingAdBlurTimer !== null) {
-      clearTimeout(pendingAdBlurTimer);
-      pendingAdBlurTimer = null;
-    }
-
     pendingAdBlur = null;
   };
   const markPendingAdBlur = (eventName) => {
-    cancelPendingAdBlur();
     pendingAdBlur = {
       eventName,
       timestamp: performance.now(),
     };
-    pendingAdBlurTimer = setTimeout(() => {
-      pendingAdBlur = null;
-      pendingAdBlurTimer = null;
-    }, BLUR_CONFIRM_MS);
   };
   const confirmPendingAdBlur = () => {
     if (!pendingAdBlur) return;
     const { eventName, timestamp } = pendingAdBlur;
-    const withinTime = performance.now() - timestamp <= BLUR_CONFIRM_MS;
+    const elapsedMs = performance.now() - timestamp;
+    const withinTime = elapsedMs <= BLUR_CONFIRM_MS;
     cancelPendingAdBlur();
     if (withinTime) {
       pushEvent(eventName);
@@ -111,7 +102,6 @@
       ? element.closest("ins")
       : null;
 
-  // 识别
   const resolveAdInfo = (activeElement = getActiveElement()) => {
     if (!activeElement) return null;
     const id = getAttribute(activeElement, "id") || "";
@@ -147,15 +137,50 @@
       adStatus: getAttribute(parentIns, "data-ad-status") || "unfilled",
     };
   };
-  // 事件
+
+  const SOURCE_CONFIRM_MS = 500;
+  let sourceFocusFrame = null;
+  let sourceFocusAt = null;
+  const markSourceFocus = (element, adInfo) => {
+    if (!adInfo || !element || element.tagName !== "IFRAME") {
+      sourceFocusFrame = null;
+      sourceFocusAt = null;
+      return;
+    }
+    if (sourceFocusFrame === element) {
+      return;
+    }
+    sourceFocusFrame = element;
+    sourceFocusAt = performance.now();
+  };
+  const isSourceFocusValid = (element, suffix) => {
+    const elapsedMs =
+      sourceFocusAt !== null ? performance.now() - sourceFocusAt : null;
+    const sameElement =
+      sourceFocusFrame !== null && sourceFocusFrame === element;
+    const valid =
+      sameElement &&
+      elapsedMs !== null &&
+      elapsedMs >= 0 &&
+      elapsedMs <= SOURCE_CONFIRM_MS;
+    return valid;
+  };
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      if (sourceFocusFrame && event.target !== sourceFocusFrame) {
+        sourceFocusFrame = null;
+        sourceFocusAt = null;
+      }
+    },
+    true,
+  );
   const resolveSourceEvent = (adInfo, suffix) => {
     if (!adInfo) return null;
     const { platform, format, adStatus, loadComplete } = adInfo;
     switch (format) {
-      // 锚定广告
       case "anchor":
         return `siteAnchoringAD${suffix}`;
-      // 激励广告
       case "reward":
         if (
           platform === "adm" ||
@@ -164,7 +189,6 @@
           return `siteRewardAD${suffix}`;
         }
         break;
-      // 穿插广告
       case "vignette":
         if (window.i_like_it !== 1) break;
         if (suffix === "Now") {
@@ -174,7 +198,6 @@
           return "justdoitnew";
         }
         break;
-      // 页内广告
       case "page":
         if (
           (platform === "adm" && loadComplete) ||
@@ -384,7 +407,9 @@
     const activeElement = getActiveElement();
     if (!activeElement) return;
     const adInfo = resolveAdInfo(activeElement);
-    let eventToPush = resolveSourceEvent(adInfo, "Now");
+    let eventToPush = isSourceFocusValid(activeElement, "Now")
+      ? resolveSourceEvent(adInfo, "Now")
+      : null;
     const className = getClassName(activeElement);
     if (className.includes("gs-") || className.includes("adpub-drawer-root")) {
       eventToPush = "clickIdentNow";
@@ -393,22 +418,6 @@
       window.onlyPageStatistics = true;
       pushEvent(eventToPush);
     }
-    // Console JSON 日志
-    console.log(
-      "[ANALYZE NOW]",
-      JSON.stringify(
-        {
-          activeTag: activeElement.tagName,
-          activeId: activeElement.id,
-          adInfo,
-          eventToPush,
-          i_like_it: window.i_like_it,
-          onlyPageStatistics: window.onlyPageStatistics,
-        },
-        null,
-        2,
-      ),
-    );
     reportSearchEngineClick(activeElement, "Now");
   };
 
@@ -416,7 +425,9 @@
     const activeElement = getActiveElement();
     if (!activeElement) return;
     const adInfo = resolveAdInfo(activeElement);
-    let eventToPush = resolveSourceEvent(adInfo, "New");
+    let eventToPush = isSourceFocusValid(activeElement, "New")
+      ? resolveSourceEvent(adInfo, "New")
+      : null;
     if (eventToPush === "justdoitnew") {
       window.onlyNew = true;
       pushEvent(isLinkClick ? "justdoitnew-link" : "justdoitnew-type");
@@ -428,23 +439,6 @@
     if (eventToPush) {
       pushEvent(eventToPush);
     }
-    // Console JSON 日志
-    console.log(
-      "[ANALYZE NEW]",
-      JSON.stringify(
-        {
-          activeTag: activeElement.tagName,
-          activeId: activeElement.id,
-          adInfo,
-          eventToPush,
-          i_like_it: window.i_like_it,
-          onlyPageStatistics: window.onlyPageStatistics,
-          isLinkClick,
-        },
-        null,
-        2,
-      ),
-    );
     reportSearchEngineClick(activeElement, "New");
   };
 
@@ -541,24 +535,20 @@
   });
 
   window.addEventListener("blur", () => {
-    const adInfo = resolveAdInfo();
-    console.log("[BLUR]", JSON.stringify(adInfo, null, 2));
+    const activeElement = getActiveElement();
+    const adInfo = resolveAdInfo(activeElement);
+    markSourceFocus(activeElement, adInfo);
     if (!adInfo) return;
     const { platform, format, adStatus, loadComplete } = adInfo;
     switch (format) {
-      // 锚定广告
       case "anchor":
         markPendingAdBlur("siteAnchoringAD");
         break;
-      // 激励广告
       case "reward":
         markPendingAdBlur("siteRewardAD");
         break;
-      // 穿插广告
       case "vignette":
-        console.log(platform, "穿插 blur");
         break;
-      // 页内广告
       case "page":
         if (
           (platform === "adm" && loadComplete) ||
@@ -572,7 +562,10 @@
 
   window.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      setTimeout(() => window.focus(), 0);
+      sourceFocusAt = null;
+      if (getActiveElement() !== sourceFocusFrame) {
+        sourceFocusFrame = null;
+      }
     } else if (document.visibilityState === "hidden") {
       confirmPendingAdBlur();
       if (!window.onlyPageStatistics) {
